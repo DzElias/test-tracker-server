@@ -7,8 +7,6 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - PORT=3000
-      # Variables sensibles se inyectarán manualmente
-    restart: unless-stopped
     volumes:
-      - ./config/.env:/app/.env  # Montar archivo .env externo
+      - ./config/.env:/app/.env
+    restart: unless-stopped

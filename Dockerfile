@@ -1,24 +1,30 @@
-# Stage 1: Build client
+# Stage 1: Build client with all dependencies
 FROM node:16-alpine as client-builder
-WORKDIR /app/client
-COPY client/package.json client/package-lock.json ./
-RUN npm install
-COPY client .
-RUN npm run build
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY client/package.json ./client/package.json
 
-# Stage 2: Build server
+# Install root and client dependencies
+RUN npm install
+RUN npm install --prefix client
+
+# Copy and build client
+COPY client ./client
+RUN npm run build --prefix client
+
+# Stage 2: Production image
 FROM node:16-alpine
 WORKDIR /app
 
 # Copy built client
 COPY --from=client-builder /app/client/build ./client/build
 
-# Install server deps
+# Install server dependencies
 COPY package.json package-lock.json ./
 RUN npm install --production
 
 # Copy server files
 COPY server ./server
 
-# .env se montará en runtime via compose
-CMD ["node", "server/index.js"] 
+EXPOSE 3000
+CMD ["node", "server/index.js"]
