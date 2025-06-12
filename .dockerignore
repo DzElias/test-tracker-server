@@ -2,7 +2,8 @@ node_modules
 npm-debug.log
 .git
 .gitignore
-client/node_modules
-server/node_modules
-client/src
-client/public
+README.md
+.env
+.nyc_output
+coverage
+.coverage

@@ -3,8 +3,8 @@
   "type": "module",
   "main": "server/index.js",
   "engines": {
-    "node": "16.15.0",
-    "npm": "8.5.5"
+    "node": "18.x",
+    "npm": "9.x"
   },
   "scripts": {
     "start": "npm install && node server/index.js",
