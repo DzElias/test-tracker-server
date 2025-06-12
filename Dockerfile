@@ -13,13 +13,12 @@ WORKDIR /app
 # Copy built client
 COPY --from=client-builder /app/client/build ./client/build
 
-# Install server dependencies
+# Install server deps
 COPY package.json package-lock.json ./
 RUN npm install --production
 
 # Copy server files
 COPY server ./server
-COPY .env .
 
-EXPOSE 3000
-CMD ["node", "server/index.js"]
+# .env se montará en runtime via compose
+CMD ["node", "server/index.js"] 

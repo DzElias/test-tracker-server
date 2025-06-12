@@ -6,11 +6,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - MONGODB_URL=mongodb+srv://Admin:12141688@apicluster.beyxlbo.mongodb.net/?retryWrites=true&w=majority&appName=APICluster
-      - SECRET=busesapisecret
-      - PORT=3000
       - NODE_ENV=production
+      - PORT=3000
+      # Variables sensibles se inyectarán manualmente
     restart: unless-stopped
     volumes:
-      - ./server:/app/server # Para desarrollo, montar el código del servidor
-      - ./client/build:/app/client/build # Para desarrollo con builds manuales
+      - ./config/.env:/app/.env  # Montar archivo .env externo
