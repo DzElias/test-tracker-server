@@ -1,26 +1,23 @@
-# Stage 1: Build client with all dependencies
-FROM node:16-alpine as client-builder
+# Stage 1: Build client
+FROM node:18-alpine as client-builder
 WORKDIR /app
-COPY package.json package-lock.json ./
-COPY client/package.json ./client/package.json
+COPY package*.json ./
+COPY client/package*.json ./client/
+RUN npm install && npm install --prefix client
 
-# Install root and client dependencies
-RUN npm install
-RUN npm install --prefix client
-
-# Copy and build client
+# Copy ALL client files (including public/)
 COPY client ./client
 RUN npm run build --prefix client
 
 # Stage 2: Production image
-FROM node:16-alpine
+FROM node:18-alpine
 WORKDIR /app
 
 # Copy built client
 COPY --from=client-builder /app/client/build ./client/build
 
-# Install server dependencies
-COPY package.json package-lock.json ./
+# Install server deps
+COPY package*.json ./
 RUN npm install --production
 
 # Copy server files
