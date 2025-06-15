@@ -2,93 +2,33 @@ import net from "net"
 import Device from "./models/device.js"
 import Bus from "./models/bus.js"
 import Point from "./models/point.js"
-import { isValidCoordinate, isValidIMEI, sanitizeGPSData } from "./utils/gps-validator.js"
 
 const TCP_PORT = process.env.TCP_PORT || 9001
 
 const server = net.createServer(async (socket) => {
   console.log(`Dispositivo conectado: ${socket.remoteAddress}:${socket.remotePort}`)
 
-  // Configurar timeout para la conexión
-  socket.setTimeout(300000) // 5 minutos
+  socket.setTimeout(300000) // 5 minutos timeout
 
   socket.on("data", async (data) => {
     try {
       const rawData = data.toString().trim()
       console.log(`Datos recibidos: ${rawData}`)
 
-      // Parsear datos según formato TK103B
-      const parsedData = parseTK103Data(rawData)
+      // Parsear diferentes tipos de mensajes TK103B
+      const parsedData = parseTK103Message(rawData)
 
       if (!parsedData) {
-        console.log("No se pudieron parsear los datos")
+        console.log("No se pudo parsear el mensaje")
         return
       }
 
-      // Sanitizar y validar datos
-      const sanitizedData = sanitizeGPSData(parsedData)
+      console.log("Mensaje parseado:", parsedData)
 
-      if (!isValidIMEI(sanitizedData.imei)) {
-        console.log(`IMEI inválido: ${sanitizedData.imei}`)
-        return
-      }
-
-      if (!isValidCoordinate(sanitizedData.lat, sanitizedData.lon)) {
-        console.log(`Coordenadas inválidas: ${sanitizedData.lat}, ${sanitizedData.lon}`)
-        return
-      }
-
-      // Buscar el dispositivo asociado a este IMEI
-      const device = await Device.findOneAndUpdate(
-        { imei: sanitizedData.imei },
-        { lastSeen: new Date() },
-        { new: true },
-      )
-
-      if (!device) {
-        console.log(`IMEI no registrado: ${sanitizedData.imei}`)
-        // Opcional: registrar automáticamente dispositivos nuevos
-        // await registerNewDevice(sanitizedData.imei);
-        return
-      }
-
-      // Actualizar ubicación del bus
-      const updatedBus = await Bus.findByIdAndUpdate(
-        device.busId,
-        {
-          latitude: sanitizedData.lat,
-          longitude: sanitizedData.lon,
-          isActive: true,
-          lastUpdate: new Date(),
-        },
-        { new: true },
-      )
-
-      if (!updatedBus) {
-        console.log(`Bus no encontrado para dispositivo: ${device.busId}`)
-        return
-      }
-
-      // Guardar punto histórico (opcional: agregar throttling para evitar demasiados puntos)
-      if (shouldSavePoint(device.busId, sanitizedData)) {
-        const point = new Point({
-          busId: device.busId,
-          latitude: sanitizedData.lat,
-          longitude: sanitizedData.lon,
-          speed: sanitizedData.speed,
-          course: sanitizedData.course,
-          date: sanitizedData.timestamp,
-        })
-        await point.save()
-      }
-
-      console.log(`Ubicación actualizada para bus ${device.busId}: ${sanitizedData.lat}, ${sanitizedData.lon}`)
-
-      // Enviar confirmación al dispositivo (opcional)
-      socket.write("OK\n")
+      // Manejar diferentes tipos de mensajes
+      await handleTK103Message(parsedData, socket)
     } catch (error) {
       console.error("Error procesando datos:", error)
-      socket.write("ERROR\n")
     }
   })
 
@@ -106,109 +46,196 @@ const server = net.createServer(async (socket) => {
   })
 })
 
-// Cache para evitar guardar demasiados puntos
-const lastPointCache = new Map()
-
-function shouldSavePoint(busId, data) {
-  const key = busId.toString()
-  const lastPoint = lastPointCache.get(key)
-
-  if (!lastPoint) {
-    lastPointCache.set(key, { lat: data.lat, lon: data.lon, time: Date.now() })
-    return true
-  }
-
-  const timeDiff = Date.now() - lastPoint.time
-  const distance = calculateDistance(lastPoint.lat, lastPoint.lon, data.lat, data.lon)
-
-  // Guardar si han pasado más de 30 segundos o se ha movido más de 10 metros
-  if (timeDiff > 30000 || distance > 0.01) {
-    lastPointCache.set(key, { lat: data.lat, lon: data.lon, time: Date.now() })
-    return true
-  }
-
-  return false
-}
-
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371 // Radio de la Tierra en km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180
-  const dLon = ((lon2 - lon1) * Math.PI) / 180
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return R * c
-}
-
-function parseTK103Data(data) {
+async function handleTK103Message(parsedData, socket) {
   try {
-    // Formato TK103B: *HQ,IMEI,V1,HHMMSS,A,DDMM.MMMM,N/S,DDDMM.MMMM,E/W,SPEED,COURSE,DDMMYY,CHECKSUM#
-    if (!data.startsWith("*HQ,") || !data.endsWith("#")) {
-      console.log("Formato de mensaje no válido")
+    // Validar IMEI
+    if (!parsedData.imei || parsedData.imei.length < 15) {
+      console.log(`IMEI inválido: ${parsedData.imei}`)
+      return
+    }
+
+    // Buscar dispositivo
+    const device = await Device.findOneAndUpdate({ imei: parsedData.imei }, { lastSeen: new Date() }, { new: true })
+
+    if (!device) {
+      console.log(`IMEI no registrado: ${parsedData.imei}`)
+      socket.write("**,imei:" + parsedData.imei + ",A#") // Respuesta de registro
+      return
+    }
+
+    // Manejar según tipo de mensaje
+    switch (parsedData.type) {
+      case "heartbeat":
+        console.log(`Heartbeat recibido de IMEI: ${parsedData.imei}`)
+        socket.write("ON#") // Respuesta estándar para heartbeat
+        break
+
+      case "gps_data":
+        if (parsedData.lat && parsedData.lon && !isNaN(parsedData.lat) && !isNaN(parsedData.lon)) {
+          // Actualizar ubicación del bus
+          await Bus.findByIdAndUpdate(device.busId, {
+            latitude: parsedData.lat,
+            longitude: parsedData.lon,
+            isActive: true,
+            lastUpdate: new Date(),
+          })
+
+          // Guardar punto histórico
+          const point = new Point({
+            busId: device.busId,
+            latitude: parsedData.lat,
+            longitude: parsedData.lon,
+            speed: parsedData.speed || 0,
+            date: parsedData.timestamp || new Date(),
+          })
+          await point.save()
+
+          console.log(`Ubicación actualizada para bus ${device.busId}: ${parsedData.lat}, ${parsedData.lon}`)
+          socket.write("**,imei:" + parsedData.imei + ",A#") // Confirmación
+        } else {
+          console.log("Coordenadas GPS inválidas")
+        }
+        break
+
+      case "login":
+        console.log(`Login recibido de IMEI: ${parsedData.imei}`)
+        socket.write("LOAD#") // Respuesta de login exitoso
+        break
+
+      default:
+        console.log(`Tipo de mensaje no manejado: ${parsedData.type}`)
+    }
+  } catch (error) {
+    console.error("Error manejando mensaje TK103:", error)
+  }
+}
+
+function parseTK103Message(data) {
+  try {
+    if (!data.startsWith("*") || !data.endsWith("#")) {
+      console.log("Formato de mensaje inválido - no tiene delimitadores correctos")
       return null
     }
 
-    const parts = data.slice(3, -1).split(",") // Remover *HQ, y #
+    // Remover delimitadores
+    const content = data.slice(1, -1) // Remover * y #
+    const parts = content.split(",")
 
-    if (parts.length < 11) {
-      console.log("Mensaje incompleto")
+    console.log("Partes del mensaje:", parts)
+
+    if (parts.length < 2) {
+      console.log("Mensaje demasiado corto")
       return null
     }
 
-    const imei = parts[0]
-    const status = parts[3] // A = válido, V = inválido
+    const messageType = parts[0]
+    const imei = parts[1]
+
+    // Diferentes tipos de mensajes TK103B
+    switch (messageType) {
+      case "HQ":
+        // Heartbeat: *HQ,IMEI,V0# o *HQ,IMEI,V1,time,status,...#
+        if (parts.length === 3 && parts[2].startsWith("V")) {
+          return {
+            type: "heartbeat",
+            imei: imei,
+            version: parts[2],
+          }
+        } else if (parts.length >= 11) {
+          // Mensaje GPS completo
+          return parseGPSData(parts)
+        }
+        break
+
+      case "BP":
+        // Mensaje de login: *BP,IMEI,HSO,time,A,lat,N/S,lon,E/W,speed,course,date,checksum#
+        if (parts.length >= 11) {
+          return parseGPSData(parts, "login")
+        }
+        break
+
+      default:
+        console.log(`Tipo de mensaje desconocido: ${messageType}`)
+        return null
+    }
+
+    return null
+  } catch (error) {
+    console.error("Error parseando mensaje TK103:", error)
+    return null
+  }
+}
+
+function parseGPSData(parts, messageType = "gps_data") {
+  try {
+    // Formato típico: HQ,IMEI,V1,HHMMSS,A,DDMM.MMMM,N/S,DDDMM.MMMM,E/W,SPEED,COURSE,DDMMYY,...
+    const imei = parts[1]
+    const time = parts[3]
+    const status = parts[4] // A = válido, V = inválido
 
     if (status !== "A") {
-      console.log("GPS sin señal válida")
-      return null
+      console.log("GPS sin señal válida (status V)")
+      return {
+        type: messageType,
+        imei: imei,
+        status: "invalid",
+      }
     }
 
     // Parsear coordenadas
-    const latRaw = parts[4] // DDMM.MMMM
-    const latHemisphere = parts[5] // N/S
-    const lonRaw = parts[6] // DDDMM.MMMM
-    const lonHemisphere = parts[7] // E/W
+    const latRaw = parts[5]
+    const latHemisphere = parts[6]
+    const lonRaw = parts[7]
+    const lonHemisphere = parts[8]
 
-    // Convertir de formato DDMM.MMMM a decimal
-    const lat = convertToDecimal(latRaw, latHemisphere)
-    const lon = convertToDecimal(lonRaw, lonHemisphere)
+    const lat = convertDMSToDecimal(latRaw, latHemisphere)
+    const lon = convertDMSToDecimal(lonRaw, lonHemisphere)
 
-    const speed = Number.parseFloat(parts[8]) || 0
-    const course = Number.parseFloat(parts[9]) || 0
-    const dateStr = parts[10] // DDMMYY
+    const speed = Number.parseFloat(parts[9]) || 0
+    const course = Number.parseFloat(parts[10]) || 0
+    const dateStr = parts[11]
 
     return {
+      type: messageType,
       imei: imei,
       lat: lat,
       lon: lon,
       speed: speed,
       course: course,
-      timestamp: parseDate(dateStr),
-      status: status,
+      timestamp: parseGPSDate(dateStr, time),
+      status: "valid",
     }
   } catch (error) {
-    console.error("Error parseando datos TK103:", error)
+    console.error("Error parseando datos GPS:", error)
     return null
   }
 }
 
-function convertToDecimal(coordinate, hemisphere) {
+function convertDMSToDecimal(coordinate, hemisphere) {
   try {
-    if (!coordinate || coordinate.length < 4) {
+    if (!coordinate || !hemisphere) {
+      console.log("Coordenada o hemisferio faltante")
       return Number.NaN
     }
 
+    console.log(`Convirtiendo coordenada: ${coordinate} ${hemisphere}`)
+
+    // Determinar si es latitud (DDMM.MMMM) o longitud (DDDMM.MMMM)
     let degrees, minutes
 
     if (coordinate.length <= 9) {
-      // Latitud DDMM.MMMM
+      // Latitud: DDMM.MMMM
       degrees = Number.parseInt(coordinate.substring(0, 2))
       minutes = Number.parseFloat(coordinate.substring(2))
     } else {
-      // Longitud DDDMM.MMMM
+      // Longitud: DDDMM.MMMM
       degrees = Number.parseInt(coordinate.substring(0, 3))
       minutes = Number.parseFloat(coordinate.substring(3))
+    }
+
+    if (isNaN(degrees) || isNaN(minutes)) {
+      console.log("Error parseando grados o minutos")
+      return Number.NaN
     }
 
     let decimal = degrees + minutes / 60
@@ -218,6 +245,7 @@ function convertToDecimal(coordinate, hemisphere) {
       decimal = -decimal
     }
 
+    console.log(`Resultado: ${decimal}`)
     return decimal
   } catch (error) {
     console.error("Error convirtiendo coordenadas:", error)
@@ -225,7 +253,7 @@ function convertToDecimal(coordinate, hemisphere) {
   }
 }
 
-function parseDate(dateStr) {
+function parseGPSDate(dateStr, timeStr) {
   try {
     if (!dateStr || dateStr.length !== 6) {
       return new Date()
@@ -235,15 +263,34 @@ function parseDate(dateStr) {
     const month = Number.parseInt(dateStr.substring(2, 4)) - 1 // Mes base 0
     const year = 2000 + Number.parseInt(dateStr.substring(4, 6))
 
-    return new Date(year, month, day)
+    let hour = 0,
+      minute = 0,
+      second = 0
+
+    if (timeStr && timeStr.length >= 6) {
+      hour = Number.parseInt(timeStr.substring(0, 2))
+      minute = Number.parseInt(timeStr.substring(2, 4))
+      second = Number.parseInt(timeStr.substring(4, 6))
+    }
+
+    return new Date(year, month, day, hour, minute, second)
   } catch (error) {
-    console.error("Error parseando fecha:", error)
+    console.error("Error parseando fecha GPS:", error)
     return new Date()
   }
 }
 
 server.listen(TCP_PORT, () => {
   console.log(`Servidor TCP escuchando en puerto ${TCP_PORT}`)
+})
+
+// Manejo de cierre graceful
+process.on("SIGTERM", () => {
+  console.log("Cerrando servidor TCP...")
+  server.close(() => {
+    console.log("Servidor TCP cerrado")
+    process.exit(0)
+  })
 })
 
 export default server
