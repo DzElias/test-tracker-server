@@ -4,6 +4,18 @@ import Bus from "./models/bus.js"
 import Point from "./models/point.js"
 
 const TCP_PORT = process.env.TCP_PORT || 9001
+import { io } from "./index.js" // Importar la instancia de Socket.IO
+
+// Función para emitir buses actualizados a los clientes WebSocket
+const emitBuses = async () => {
+  try {
+    const buses = await Bus.find();
+    io.emit("loadBuses", buses);
+    console.log("Buses emitidos a clientes WebSocket");
+  } catch (error) {
+    console.error("Error emitiendo buses:", error);
+  }
+};
 
 const server = net.createServer(async (socket) => {
   console.log(`Dispositivo conectado: ${socket.remoteAddress}:${socket.remotePort}`)
@@ -13,7 +25,6 @@ const server = net.createServer(async (socket) => {
   socket.on("data", async (data) => {
     try {
       const rawData = data.toString().trim()
-      console.log(`Datos recibidos: ${rawData}`)
 
       // Parsear diferentes tipos de mensajes TK103B
       const parsedData = parseTK103Message(rawData)
@@ -91,6 +102,7 @@ async function handleTK103Message(parsedData, socket) {
           await point.save()
 
           console.log(`Ubicación actualizada para bus ${device.busId}: ${parsedData.lat}, ${parsedData.lon}`)
+          await emitBuses();
           socket.write("**,imei:" + parsedData.imei + ",A#") // Confirmación
         } else {
           console.log("Coordenadas GPS inválidas")

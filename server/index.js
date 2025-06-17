@@ -7,7 +7,6 @@ import { PORT, TCP_PORT } from "./config.js";
 import { connectDB } from "./db.js";
 import sockets from "./sockets.js";
 import app from "./app.js";
-import './server.js'; // Importa el servidor TCP
 
 // Conexión a base de datos
 connectDB();
@@ -23,4 +22,10 @@ const io = new SocketServer(httpServer, {
     origin: true,
   },
 });
+
 sockets(io);
+
+export {io};
+
+import './server.js';
+
